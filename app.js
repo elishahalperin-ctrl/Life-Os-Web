@@ -36,11 +36,38 @@ function h(tag, attrs = {}, ...kids) {
   return el;
 }
 
+// Line icons, drawn as inline SVG (no image requests, nothing for the CSP to allow).
+const SVGNS = 'http://www.w3.org/2000/svg';
+const ICONS = {
+  today: [['rect', { x: 3, y: 4.5, width: 18, height: 16, rx: 3 }], ['path', { d: 'M3 9.5h18M8 2.5v4M16 2.5v4' }]],
+  tasks: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M8 12.3l2.8 2.8L16.5 9.5' }]],
+  notes: [['path', { d: 'M6.5 3h7.5l4.5 4.5V21h-12z' }], ['path', { d: 'M14 3v4.5h4.5M9 12.5h6M9 16.5h6' }]],
+  money: [['rect', { x: 2.5, y: 6, width: 19, height: 13, rx: 3 }], ['circle', { cx: 12, cy: 12.5, r: 2.6 }]],
+  plus: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M12 8v8M8 12h8' }]],
+  gear: [['path', { d: 'M4 7h9M17 7h3M4 17h3M11 17h9' }], ['circle', { cx: 15, cy: 7, r: 2.2 }], ['circle', { cx: 9, cy: 17, r: 2.2 }]],
+  check: [['path', { d: 'M6.5 12.5l3.6 3.6L17.5 8.5' }]],
+};
+function icon(name) {
+  const make = (tag, attrs) => { const el = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); return el; };
+  const svg = make('svg', { viewBox: '0 0 24 24', class: 'icon', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false' });
+  for (const [tag, attrs] of ICONS[name]) svg.append(make(tag, attrs));
+  return svg;
+}
+
 const encPath = (p) => encodeURIComponent(p).replace(/[()]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
 const noteHref = (p) => `#/note/${encPath(p)}`;
 const escHtml = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const addDays = (iso, n) => { const d = new Date(`${iso}T12:00:00`); d.setDate(d.getDate() + n); return d.toLocaleDateString('en-CA'); };
 const day = (v) => String(v ?? '').slice(0, 10);
+function nice(v) {
+  const s = String(v ?? ''), d = new Date(`${s.slice(0, 10)}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return s;
+  const label = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  const t = /T(\d\d):(\d\d)/.exec(s);
+  if (!t || /Z$|[+-]\d\d:?\d\d$/.test(s)) return label; // times in other zones stay on the note page
+  const hh = Number(t[1]);
+  return `${label}, ${(hh % 12) || 12}:${t[2]} ${hh < 12 ? 'AM' : 'PM'}`;
+}
 const money = (n) => `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 const statusClass = (s) => ({ Inbox: 'inbox', 'To Do': '', 'In Progress': 'prog', Waiting: 'wait', Blocked: 'block', Done: 'done' }[s] ?? '');
 const pill = (text, cls = '') => h('span', { class: `pill ${cls}` }, text);
@@ -109,27 +136,28 @@ function route() {
   return { view: view || 'today', arg: rest.length ? decodeURIComponent(rest.join('/')) : null };
 }
 
-const NAV = [['today', 'Today'], ['tasks', 'Tasks'], ['notes', 'Notes'], ['money', 'Money'], ['new', '+ New']];
+const NAV = [['today', 'Today', 'today'], ['tasks', 'Tasks', 'tasks'], ['notes', 'Notes', 'notes'], ['money', 'Money', 'money'], ['new', 'New', 'plus']];
 
 function badge() {
-  const cfg = getCfg();
-  return h('div', { class: 'sync' },
-    h('span', { class: 'label', id: 'badge' }, S.status === 'ready' ? `${cfg.repo} · ${cfg.branch} · synced ${ago(S.lastSync)}` : ''),
-    S.status === 'ready' && h('button', { class: 'btn small', type: 'button', onclick: reload }, 'Reload'),
-    h('a', { class: 'btn small', href: '#/settings', 'aria-current': route().view === 'settings' ? 'page' : null }, 'Settings'));
+  return h('div', { class: 'top-actions' },
+    S.status === 'ready' && h('button', { class: 'sync', type: 'button', onclick: reload, title: 'Check GitHub for changes now' },
+      h('span', { class: 'dot', 'aria-hidden': 'true' }), h('span', { id: 'badge' }, syncText())),
+    h('a', { class: 'icon-btn', href: '#/settings', title: 'Settings', 'aria-label': 'Settings', 'aria-current': route().view === 'settings' ? 'page' : null }, icon('gear')));
 }
+const syncText = () => `Synced ${ago(S.lastSync)}`;
 function updateBadge() {
   const b = document.getElementById('badge');
-  if (b && S.status === 'ready') { const cfg = getCfg(); b.textContent = `${cfg.repo} · ${cfg.branch} · synced ${ago(S.lastSync)}`; }
+  if (b && S.status === 'ready') b.textContent = syncText();
 }
 
 async function reload() { DRAFT = null; await connect(); toast('Reloaded from GitHub'); }
 
 function frame(content, active) {
+  const tab = { note: 'notes', settings: '' }[active] ?? active;
   return [
     h('header', { class: 'top' }, h('div', { class: 'top-row' },
       h('a', { class: 'brand', href: '#/today' }, 'Life OS'),
-      h('nav', { class: 'nav', 'aria-label': 'Sections' }, NAV.map(([k, label]) => h('a', { href: `#/${k}`, 'aria-current': k === active ? 'page' : null }, label))),
+      token() && h('nav', { class: 'tabs', 'aria-label': 'Sections' }, NAV.map(([k, label, ic]) => h('a', { href: `#/${k}`, 'aria-current': k === tab ? 'page' : null }, icon(ic), h('span', {}, label)))),
       badge())),
     h('main', { class: 'wrap' }, content),
   ];
@@ -161,8 +189,8 @@ function viewError() {
 
 /* ---------- shared pieces ---------- */
 
-async function changeStatus(note, status, select) {
-  select.disabled = true;
+async function changeStatus(note, status, control) {
+  control.disabled = true;
   try {
     const parts = { ...note.parts, entries: note.parts.entries.map((e) => ({ ...e })) };
     setEntry(parts.entries, 'status', status);
@@ -171,28 +199,40 @@ async function changeStatus(note, status, select) {
     toast(`${note.name}: ${status}`);
     render();
   } catch (e) {
-    select.value = note.data.status || '';
-    select.disabled = false;
+    if (control.tagName === 'SELECT') control.value = note.data.status || '';
+    control.disabled = false;
     toast(explain(e), true);
   }
 }
 
+const AREA_CLASS = { lumi: 'a-lumi', School: 'a-school', Personal: 'a-personal' };
+const areaTag = (a) => h('span', { class: `area ${AREA_CLASS[a] || 'a-none'}` }, a || 'Unsorted');
+
 function taskRow(t, { select = true } = {}) {
-  const d = t.data;
-  const today = todayISO();
-  return h('li', {},
+  const d = t.data, done = d.status === 'Done';
+  const late = d.due && day(d.due) < todayISO() && !done;
+  const check = h('button', {
+    class: `check${done ? ' on' : ''}`, type: 'button', title: done ? 'Mark as not done' : 'Mark as done',
+    'aria-label': done ? `Mark ${t.name} as not done` : `Mark ${t.name} as done`, onclick: () => changeStatus(t, done ? 'To Do' : 'Done', check),
+  }, icon('check'));
+  return h('li', { class: `task${done ? ' is-done' : ''}` },
+    select && check,
     h('div', { class: 'title' }, h('a', { href: noteHref(t.path) }, t.name),
-      h('div', { class: 'meta' }, [d.area, d.part, d.phase, d.priority && `${d.priority} priority`, d.due && `due ${day(d.due)}${day(d.due) < today && d.status !== 'Done' ? ' (overdue)' : ''}`].filter(Boolean).join(' · '))),
+      h('div', { class: 'meta' }, areaTag(d.area),
+        [d.part, d.phase, d.priority === 'High' && 'High priority'].filter(Boolean).map((x) => h('span', {}, x)),
+        d.due && h('span', { class: `due${late ? ' late' : ''}` }, `${late ? 'Overdue' : 'Due'} ${nice(d.due)}`))),
     select
-      ? h('select', { class: 'status-select', 'aria-label': `Status of ${t.name}`, onchange: (e) => changeStatus(t, e.target.value, e.target) },
+      ? h('select', { class: `status-select st-${statusClass(d.status) || 'todo'}`, 'aria-label': `Status of ${t.name}`, onchange: (e) => changeStatus(t, e.target.value, e.target) },
         STATUSES.map((s) => h('option', { value: s, selected: s === d.status }, s)))
       : pill(d.status || '—', statusClass(d.status)));
 }
 
 function section(title, items, empty, render_ = (x) => x) {
-  return h('section', { class: 'panel' }, h('h2', {}, title),
+  return h('section', { class: 'panel' }, h('h2', {}, title, items.length > 0 && h('span', { class: 'count' }, items.length)),
     items.length ? h('ul', { class: 'list' }, items.map(render_)) : h('p', { class: 'empty' }, empty));
 }
+
+const itemRow = (n, meta, side) => h('li', {}, h('div', { class: 'title' }, h('a', { href: noteHref(n.path) }, n.name), meta && h('div', { class: 'meta' }, meta)), side && h('span', { class: 'when' }, side));
 
 async function quickAdd(input, areaFilter) {
   const raw = input.value.trim();
@@ -211,7 +251,7 @@ async function quickAdd(input, areaFilter) {
 }
 
 function quickAddBox(areaFilter) {
-  const input = h('input', { type: 'text', id: 'quick-add', placeholder: 'Add a task to the inbox…', enterkeyhint: 'done', 'aria-label': 'New task title', onkeydown: (e) => { if (e.key === 'Enter') quickAdd(input, areaFilter); } });
+  const input = h('input', { type: 'text', id: 'quick-add', placeholder: 'New task, e.g. Order hang tags', enterkeyhint: 'done', 'aria-label': 'New task title', onkeydown: (e) => { if (e.key === 'Enter') quickAdd(input, areaFilter); } });
   return h('div', { class: 'row' }, h('div', { class: 'grow' }, input), h('button', { class: 'btn primary', type: 'button', onclick: () => quickAdd(input, areaFilter) }, 'Add'));
 }
 
@@ -251,16 +291,17 @@ async function saveCapture(area, btn) {
 function captureBox() {
   const waiting = waitingCaptures().length;
   const area = h('textarea', {
-    class: 'short', id: 'capture', 'aria-label': 'Capture', value: store.get('lifeos.capture-draft') || '',
-    placeholder: 'Homework, an idea, something for lumi, a thing to remember…',
+    class: 'short', id: 'capture', 'aria-label': 'Capture', value: store.get('lifeos.capture-draft') || '', rows: 3,
+    placeholder: 'math hw p.45 due Thursday · ask Jam about lead time · remember…',
     oninput: () => store.set('lifeos.capture-draft', area.value),
     onkeydown: (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveCapture(area, btn); },
   });
-  const btn = h('button', { class: 'btn primary', type: 'button', id: 'capture-save', onclick: () => saveCapture(area, btn) }, 'Capture');
-  return h('section', { class: 'panel capture' }, h('h2', {}, 'Capture'),
-    h('p', { class: 'muted' }, 'Write it the way you would say it, several things at once is fine. Claude files it: homework into Coursework, to-dos into Tasks, lumi into its workstream, lasting facts into Memory.'),
+  const btn = h('button', { class: 'btn primary', type: 'button', id: 'capture-save', onclick: () => saveCapture(area, btn) }, 'Save');
+  return h('section', { class: 'panel capture' },
+    h('div', { class: 'capture-head' }, h('h2', {}, 'Capture'),
+      h('span', { class: 'meta', id: 'capture-waiting' }, waiting ? `${waiting} waiting to be filed` : 'Filed for you every morning')),
     area,
-    h('div', { class: 'row' }, btn, h('span', { class: 'muted', id: 'capture-waiting' }, waiting ? `${waiting} waiting to be filed` : 'Nothing waiting to be filed')));
+    h('div', { class: 'capture-foot' }, h('span', { class: 'meta' }, 'Homework, to-dos, ideas, things to remember. Several at once is fine.'), btn));
 }
 
 function newNoteText(folder, values, body) {
@@ -287,25 +328,29 @@ function viewToday() {
   const routines = v.records('Routines').filter((r) => r.data.next_due && day(r.data.next_due) <= today);
   const work = v.records('Coursework').filter((w) => w.data.status !== 'Graded' && w.data.due && day(w.data.due) <= week).sort((a, b) => day(a.data.due).localeCompare(day(b.data.due)));
   const attention = [...new Map([...blocked, ...slipping, ...dueSoon].map((t) => [t.path, t])).values()];
+  const stat = (n, label, href, warn) => h('a', { class: `stat${warn && n ? ' warn' : ''}`, href }, h('b', {}, n), h('span', {}, label));
+
+  const lists = [
+    ['Needs attention', attention, (t) => taskRow(t)],
+    ['Homework and tests this week', work, (w) => itemRow(w, [w.data.course && String([].concat(w.data.course)[0]).replace(/^\[\[|\]\]$/g, ''), w.data.type].filter(Boolean).join(' · '), nice(w.data.due))],
+    ['Coming up', events, (e) => itemRow(e, [e.data.kind, e.data.where].filter(Boolean).join(' · '), nice(e.data.when))],
+    ['In progress', prog, (t) => taskRow(t)],
+    ['Inbox', inbox, (t) => taskRow(t)],
+    ['Follow up with', follow, (p) => itemRow(p, p.data.relation, `by ${nice(p.data.follow_up_by)}`)],
+    ['Routines due', routines, (r) => itemRow(r, r.data.cadence, nice(r.data.next_due))],
+  ].filter(([, l]) => l.length);
 
   return h('div', { class: 'stack' },
-    h('div', { class: 'stack' }, h('h1', {}, new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })),
-      h('div', { class: 'stats' },
-        h('div', { class: 'stat' }, h('b', {}, open.length), h('span', {}, 'open tasks')),
-        h('div', { class: 'stat' }, h('b', {}, blocked.length), h('span', {}, 'blocked')),
-        h('div', { class: 'stat' }, h('b', {}, inbox.length), h('span', {}, 'in the inbox')),
-        h('div', { class: 'stat' }, h('b', {}, events.length), h('span', {}, 'events in 30 days')))),
+    h('div', { class: 'page-head' }, h('h1', {}, new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }))),
+    h('div', { class: 'stats' },
+      stat(open.length, 'open tasks', '#/tasks'),
+      stat(blocked.length, 'blocked', '#/tasks', true),
+      stat(inbox.length, 'in the inbox', '#/tasks'),
+      stat(events.length, 'events in 30 days', '#/today')),
     captureBox(),
-    quickAddBox(),
-    h('div', { class: 'cols' },
-      section('Needs attention', attention, 'Nothing blocked, overdue or due in the next three days.', (t) => taskRow(t)),
-      section('In progress', prog, 'Nothing in progress.', (t) => taskRow(t)),
-      section('Inbox', inbox, 'Inbox is empty.', (t) => taskRow(t))),
-    h('div', { class: 'cols' },
-      section('Coming up', events, 'No events in the next 30 days.', (e) => h('li', {}, h('div', { class: 'title' }, h('a', { href: noteHref(e.path) }, e.name), h('div', { class: 'meta' }, [e.data.kind, e.data.where, e.data.area].filter(Boolean).join(' · '))), h('span', { class: 'meta' }, String(e.data.when || '').replace('T', ' ').replace(/:00(\.\d+)?Z?$/, '')))),
-      section('Coursework due this week', work, 'No coursework due in the next 7 days.', (w) => h('li', {}, h('div', { class: 'title' }, h('a', { href: noteHref(w.path) }, w.name), h('div', { class: 'meta' }, [w.data.type, w.data.status].filter(Boolean).join(' · '))), h('span', { class: 'meta' }, `due ${day(w.data.due)}`))),
-      section('Follow up with', follow, 'No follow-ups due.', (p) => h('li', {}, h('div', { class: 'title' }, h('a', { href: noteHref(p.path) }, p.name)), h('span', { class: 'meta' }, `by ${day(p.data.follow_up_by)}`))),
-      section('Routines due', routines, 'No routines due.', (r) => h('li', {}, h('div', { class: 'title' }, h('a', { href: noteHref(r.path) }, r.name)), h('span', { class: 'meta' }, `${r.data.cadence || ''} · due ${day(r.data.next_due)}`)))));
+    lists.length
+      ? h('div', { class: 'cols' }, lists.map(([title, l, r]) => section(title, l, '', r)))
+      : h('section', { class: 'panel all-clear' }, h('h2', {}, 'All caught up'), h('p', { class: 'muted' }, 'Nothing blocked, due or waiting for you.')));
 }
 
 /* ---------- Tasks ---------- */
@@ -317,42 +362,49 @@ function viewTasks() {
   const set = (patch) => { Object.assign(S.filter, patch); render(); };
   const groups = STATUS_ORDER.map((s) => [s, shown.filter((t) => (t.data.status || 'Inbox') === s)]).filter(([, l]) => l.length);
   return h('div', { class: 'stack' },
-    h('h1', {}, 'Tasks'),
+    h('div', { class: 'page-head' }, h('h1', {}, 'Tasks'), h('span', { class: 'meta' }, `${shown.length} shown`)),
     quickAddBox(f.area),
-    h('div', { class: 'row' },
-      h('div', { class: 'chips', role: 'group', 'aria-label': 'Area' }, ['All', ...SCHEMA.areas, 'Unsorted'].map((a) => h('button', { class: 'chip', type: 'button', 'aria-pressed': String(f.area === a), onclick: () => set({ area: a }) }, a))),
-      h('button', { class: 'chip', type: 'button', 'aria-pressed': String(f.showDone), onclick: () => set({ showDone: !f.showDone }) }, 'Show done')),
+    h('div', { class: 'filters' },
+      h('div', { class: 'seg', role: 'group', 'aria-label': 'Area' }, ['All', ...SCHEMA.areas, 'Unsorted'].map((a) => h('button', { class: 'chip', type: 'button', 'aria-pressed': String(f.area === a), onclick: () => set({ area: a }) }, a))),
+      h('button', { class: 'chip toggle', type: 'button', 'aria-pressed': String(f.showDone), onclick: () => set({ showDone: !f.showDone }) }, f.showDone ? 'Hide done' : 'Show done')),
     groups.length
-      ? groups.map(([s, list]) => h('section', { class: 'panel' }, h('h2', {}, h('span', {}, `${s} `), h('span', { class: 'muted' }, `(${list.length})`)),
+      ? groups.map(([s, list]) => h('section', { class: 'panel' }, h('h2', {}, h('span', { class: `dot st-${statusClass(s) || 'todo'}`, 'aria-hidden': 'true' }), s, h('span', { class: 'count' }, list.length)),
         h('ul', { class: 'list' }, list.sort((a, b) => (a.data.phase || '~').localeCompare(b.data.phase || '~') || (day(a.data.due) || '9999').localeCompare(day(b.data.due) || '9999') || a.name.localeCompare(b.name)).map((t) => taskRow(t)))))
-      : h('p', { class: 'empty' }, 'No tasks match.'));
+      : h('section', { class: 'panel all-clear' }, h('h2', {}, 'Nothing here'), h('p', { class: 'muted' }, f.showDone ? 'No tasks match this filter.' : 'No open tasks match. Try another area, or Show done.')));
 }
 
 /* ---------- Notes ---------- */
 
+const START_HERE = ['Home.md', 'Memory/About me.md', 'Memory/lumi memory.md', 'Memory/School memory.md', 'Memory/Personal memory.md', 'Index/Vault overview.md'];
+const PAGE_GROUPS = [['Memory', 'Memory'], ['Areas', 'Areas'], ['Overviews', 'Index'], ['Capture', 'Capture'], ['Handbook', 'Handbook']];
+
 function viewNotes() {
   const v = S.vault;
   const results = h('div', { class: 'stack' });
-  const q = h('input', { type: 'search', id: 'note-search', placeholder: 'Search names and note text…', value: S.query, 'aria-label': 'Search notes', oninput: (e) => { S.query = e.target.value; fill(); } });
-  const link = (p) => h('li', {}, h('div', { class: 'title' }, h('a', { href: noteHref(p) }, baseName(p)), h('div', { class: 'meta' }, p)));
+  const q = h('input', { type: 'search', id: 'note-search', placeholder: 'Search everything…', value: S.query, 'aria-label': 'Search notes', oninput: (e) => { S.query = e.target.value; fill(); } });
+  const where = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : 'Vault');
+  const link = (p) => h('li', {}, h('div', { class: 'title' }, h('a', { href: noteHref(p) }, baseName(p)), h('div', { class: 'meta' }, where(p))));
+  const group = (label, paths) => paths.length > 0 && h('details', { class: 'panel group' },
+    h('summary', {}, h('span', {}, label), h('span', { class: 'count' }, paths.length)), h('ul', { class: 'list' }, paths.map(link)));
   function fill() {
     const term = S.query.trim().toLowerCase();
     results.replaceChildren();
     if (term) {
       const hits = v.paths.filter((p) => baseName(p).toLowerCase().includes(term) || (v.notes.get(p)?.text || '').toLowerCase().includes(term));
-      results.append(h('section', { class: 'panel' }, h('h2', {}, `${hits.length} match${hits.length === 1 ? '' : 'es'}`), h('ul', { class: 'list' }, hits.slice(0, 80).map(link)), hits.length > 80 && h('p', { class: 'meta' }, 'Showing the first 80.'), h('p', { class: 'meta' }, 'Text search covers tasks, notes, events, money, people and courses. Open other pages to read them.')));
+      results.append(h('section', { class: 'panel' }, h('h2', {}, `${hits.length} match${hits.length === 1 ? '' : 'es'}`),
+        hits.length ? h('ul', { class: 'list' }, hits.slice(0, 80).map(link)) : h('p', { class: 'empty' }, 'Nothing found. Try fewer or different words.'),
+        hits.length > 80 && h('p', { class: 'meta' }, 'Showing the first 80.')));
       return;
     }
+    const start = START_HERE.filter((p) => v.shas.has(p));
+    if (start.length) results.append(h('section', { class: 'panel' }, h('h2', {}, 'Start here'), h('ul', { class: 'list' }, start.map(link))));
+    for (const folder of RECORD_FOLDERS) results.append(group(folder, v.records(folder).map((n) => n.path)) || '');
     const pages = v.paths.filter((p) => !isRecordPath(p) && !p.startsWith('Templates/'));
-    results.append(h('section', { class: 'panel' }, h('h2', {}, 'Pages'), h('ul', { class: 'list' }, pages.map(link))));
-    for (const folder of RECORD_FOLDERS) {
-      const list = v.records(folder);
-      if (!list.length) continue;
-      results.append(h('section', { class: 'panel' }, h('h2', {}, `${folder} `, h('span', { class: 'muted' }, `(${list.length})`)), h('ul', { class: 'list' }, list.map((n) => link(n.path)))));
-    }
+    for (const [label, top] of PAGE_GROUPS) results.append(group(label, pages.filter((p) => p.split('/')[0] === top)) || '');
+    results.append(group('Everything else', pages.filter((p) => !PAGE_GROUPS.some(([, top]) => p.split('/')[0] === top))) || '');
   }
   fill();
-  return h('div', { class: 'stack' }, h('h1', {}, 'Notes'), q, results);
+  return h('div', { class: 'stack' }, h('div', { class: 'page-head' }, h('h1', {}, 'Notes')), q, results);
 }
 
 /* ---------- Money ---------- */
@@ -367,7 +419,7 @@ function viewMoney() {
   const table = (list, cols) => h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, cols.map(([label, , cls]) => h('th', { class: cls }, label)))),
     h('tbody', {}, list.map((m) => h('tr', {}, cols.map(([, fn, cls]) => h('td', { class: cls }, fn(m))))))));
   const name = (m) => h('a', { href: noteHref(m.path) }, m.name);
-  return h('div', { class: 'stack' }, h('h1', {}, 'Money'),
+  return h('div', { class: 'stack' }, h('div', { class: 'page-head' }, h('h1', {}, 'Money')),
     h('section', { class: 'panel' }, h('h2', {}, 'lumi costs'),
       h('div', { class: 'stats' },
         h('div', { class: 'stat' }, h('b', {}, money(sum((m) => !m.data.recurring || m.data.recurring === 'None'))), h('span', {}, 'one-off costs listed')),
@@ -473,12 +525,12 @@ function viewNote(path) {
   if (!editing) body.innerHTML = mdToHtml(bodyOf(note));
 
   return h('div', { class: 'stack' },
-    h('div', {}, h('div', { class: 'crumb' }, h('a', { href: '#/notes' }, 'Notes'), ' / ', path), h('h1', {}, note.name)),
+    h('div', { class: 'note-head' }, h('a', { class: 'back', href: '#/notes' }, '‹ Notes'), h('h1', {}, note.name), h('div', { class: 'crumb' }, path)),
     generated && h('p', { class: 'banner' }, 'This page is generated from your notes. Change the notes themselves and it refreshes on the next sync.'),
     h('div', { class: 'row' },
       !editing && !generated && h('button', { class: 'btn primary', type: 'button', onclick: startEdit }, 'Edit'),
-      h('button', { class: 'btn', type: 'button', onclick: async () => { try { v.notes.delete(path); await v.open(path); render(); toast('Reloaded'); } catch (e) { toast(explain(e), true); } } }, 'Reload this note'),
-      h('a', { class: 'btn', href: `https://github.com/${getCfg().owner}/${getCfg().repo}/blob/${getCfg().branch}/${path.split('/').map(encodeURIComponent).join('/')}`, target: '_blank', rel: 'noopener noreferrer' }, 'View on GitHub')),
+      h('button', { class: 'btn ghost', type: 'button', onclick: async () => { try { v.notes.delete(path); await v.open(path); render(); toast('Reloaded'); } catch (e) { toast(explain(e), true); } } }, 'Reload'),
+      h('a', { class: 'btn ghost', href: `https://github.com/${getCfg().owner}/${getCfg().repo}/blob/${getCfg().branch}/${path.split('/').map(encodeURIComponent).join('/')}`, target: '_blank', rel: 'noopener noreferrer' }, 'Open on GitHub')),
     editing ? editorPanel(note, isRecord, extras)
       : h('div', { class: 'stack' },
         isRecord && h('section', { class: 'panel' }, h('h2', {}, 'Properties'), h('div', { class: 'props' },
@@ -539,8 +591,9 @@ function editorPanel(note, isRecord, extras) {
 
 function viewNew(folder) {
   if (!folder || !SCHEMA.folders[folder]) {
-    return h('div', { class: 'stack' }, h('h1', {}, 'New'), h('p', { class: 'muted' }, 'What are you adding?'),
-      h('div', { class: 'chips' }, RECORD_FOLDERS.map((f) => h('a', { class: 'btn', href: `#/new/${f}` }, FOLDER_LABEL[f]))));
+    return h('div', { class: 'stack' }, h('div', { class: 'page-head' }, h('h1', {}, 'New')),
+      h('p', { class: 'muted' }, 'Not sure where it goes? Use Capture on Today and Claude files it.'),
+      h('div', { class: 'choices' }, RECORD_FOLDERS.map((f) => h('a', { class: 'btn choice', href: `#/new/${f}` }, h('b', {}, FOLDER_LABEL[f]), h('span', {}, SCHEMA.folders[f].hint)))));
   }
   const def = SCHEMA.folders[folder];
   if (DRAFT?.path !== `new:${folder}`) {
